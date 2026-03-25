@@ -1,11 +1,14 @@
 [package]
 name = "stinger-mqtt-trait"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 authors = ["Jacob Brunson <github@jacobbrunson.com>"]
 description = "Rust trait for defining an interface for a MQTT client"
 license = "MIT"
 repository = "https://github.com/pearmaster/stinger-mqtt-trait"
+
+[package.metadata.docs.rs]
+features = ["mock_client", "availability_publish"]
 
 [dependencies]
 tokio = { version = "1.48.0", features = ["sync"] }

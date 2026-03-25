@@ -2,6 +2,7 @@
 
 use crate::{Mqtt5PubSub, MqttConnectionState, Mqtt5PubSubError, MqttPublishSuccess, message::{MqttMessage, QoS}};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, watch};
 
@@ -22,6 +23,8 @@ pub struct MockClient {
     subscriptions: Arc<Mutex<Vec<(String, u32, broadcast::Sender<MqttMessage>)>>>,
     /// Next subscription ID to assign
     next_sub_id: Arc<Mutex<u32>>,
+    /// Storage for retained messages, keyed by topic
+    retained_messages: Arc<Mutex<HashMap<String, MqttMessage>>>,
 }
 
 impl MockClient {
@@ -35,6 +38,7 @@ impl MockClient {
             published_messages: Arc::new(Mutex::new(Vec::new())),
             subscriptions: Arc::new(Mutex::new(Vec::new())),
             next_sub_id: Arc::new(Mutex::new(1)),
+            retained_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     
@@ -63,7 +67,17 @@ impl MockClient {
     /// This will send the message through any registered subscription senders
     /// that match the given topic. Returns the number of subscriptions that
     /// received the message.
+    ///
+    /// If the message has the `retain` flag set, it will be stored (or replaced)
+    /// in the retained messages store for that topic. Retained messages are
+    /// replayed to new subscribers when they call `subscribe()`.
     pub fn simulate_receive(&self, mut message: MqttMessage) -> Result<usize, Mqtt5PubSubError> {
+        // Store retained messages
+        if message.retain {
+            let mut retained = self.retained_messages.lock().unwrap();
+            retained.insert(message.topic.clone(), message.clone());
+        }
+
         let subscriptions = self.subscriptions.lock().unwrap();
         let mut sent_count = 0;
 
@@ -78,6 +92,16 @@ impl MockClient {
         }
 
         Ok(sent_count)
+    }
+
+    /// Get all retained messages
+    pub fn retained_messages(&self) -> HashMap<String, MqttMessage> {
+        self.retained_messages.lock().unwrap().clone()
+    }
+
+    /// Clear all retained messages
+    pub fn clear_retained_messages(&mut self) {
+        self.retained_messages.lock().unwrap().clear();
     }
 }
 
@@ -107,7 +131,16 @@ impl Mqtt5PubSub for MockClient {
         let mut next_id = self.next_sub_id.lock().unwrap();
         let subscription_id = *next_id;
         *next_id += 1;
-        subscriptions.push((topic, subscription_id, tx));
+        subscriptions.push((topic.clone(), subscription_id, tx.clone()));
+
+        // Replay any retained message for this topic
+        let retained = self.retained_messages.lock().unwrap();
+        if let Some(retained_msg) = retained.get(&topic) {
+            let mut msg = retained_msg.clone();
+            msg.subscription_id = Some(subscription_id);
+            let _ = tx.send(msg);
+        }
+
         Ok(subscription_id)
     }
 
@@ -345,5 +378,126 @@ mod tests {
         
         assert_eq!(received1.subscription_id, Some(1));
         assert_eq!(received2.subscription_id, Some(2));
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_retained_message_stored() {
+        let client = MockClient::new_default();
+        
+        let msg = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("retained payload"),
+        );
+        
+        client.simulate_receive(msg).unwrap();
+        
+        let retained = client.retained_messages();
+        assert_eq!(retained.len(), 1);
+        assert!(retained.contains_key("test/retained"));
+        assert_eq!(retained["test/retained"].payload, Bytes::from("retained payload"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_retained_message_replaced() {
+        let client = MockClient::new_default();
+        
+        let msg1 = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("first"),
+        );
+        let msg2 = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("second"),
+        );
+        
+        client.simulate_receive(msg1).unwrap();
+        client.simulate_receive(msg2).unwrap();
+        
+        let retained = client.retained_messages();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained["test/retained"].payload, Bytes::from("second"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_non_retained_not_stored() {
+        let client = MockClient::new_default();
+        
+        let msg = MqttMessage::simple(
+            "test/topic".to_string(),
+            QoS::AtLeastOnce,
+            false,
+            Bytes::from("not retained"),
+        );
+        
+        client.simulate_receive(msg).unwrap();
+        
+        assert!(client.retained_messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_subscribe_replays_retained() {
+        let mut client = MockClient::new_default();
+        
+        // Simulate a retained message before subscribing
+        let msg = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("retained payload"),
+        );
+        client.simulate_receive(msg).unwrap();
+        
+        // Now subscribe - should immediately receive the retained message
+        let (tx, mut rx) = broadcast::channel(10);
+        let sub_id = client.subscribe("test/retained".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
+        
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.topic, "test/retained");
+        assert_eq!(received.payload, Bytes::from("retained payload"));
+        assert_eq!(received.subscription_id, Some(sub_id));
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_subscribe_no_retained_for_topic() {
+        let mut client = MockClient::new_default();
+        
+        // Retain a message on a different topic
+        let msg = MqttMessage::simple(
+            "other/topic".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("retained"),
+        );
+        client.simulate_receive(msg).unwrap();
+        
+        // Subscribe to a topic with no retained message
+        let (tx, mut rx) = broadcast::channel(10);
+        client.subscribe("test/topic".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
+        
+        // Should not receive anything - verify with try_recv
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_clear_retained_messages() {
+        let mut client = MockClient::new_default();
+        
+        let msg = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("retained"),
+        );
+        client.simulate_receive(msg).unwrap();
+        assert_eq!(client.retained_messages().len(), 1);
+        
+        client.clear_retained_messages();
+        assert!(client.retained_messages().is_empty());
     }
 }
