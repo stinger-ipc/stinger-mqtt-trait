@@ -1,6 +1,6 @@
 [package]
 name = "stinger-mqtt-trait"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["Jacob Brunson <github@jacobbrunson.com>"]
 description = "Rust trait for defining an interface for a MQTT client"

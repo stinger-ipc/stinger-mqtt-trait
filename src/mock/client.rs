@@ -82,8 +82,7 @@ impl MockClient {
         let mut sent_count = 0;
 
         for (topic, sub_id, tx) in subscriptions.iter() {
-            // Simple topic matching (exact match only, no wildcards)
-            if topic == &message.topic {
+            if Self::topic_matches(topic, &message.topic) {
                 message.subscription_id = Some(*sub_id);
                 tx.send(message.clone())
                     .map_err(|e| Mqtt5PubSubError::Other(format!("Failed to send message to subscription: {}", e)))?;
@@ -102,6 +101,33 @@ impl MockClient {
     /// Clear all retained messages
     pub fn clear_retained_messages(&mut self) {
         self.retained_messages.lock().unwrap().clear();
+    }
+
+    /// Returns `true` if `topic` matches the MQTT subscription `filter`.
+    ///
+    /// Supports MQTT wildcard characters:
+    /// - `+` matches exactly one topic level (e.g. `sensor/+/temp` matches `sensor/room1/temp`)
+    /// - `#` matches zero or more topic levels and must appear as the last character
+    ///   (e.g. `sensor/#` matches `sensor`, `sensor/room1`, `sensor/room1/temp`)
+    pub fn topic_matches(filter: &str, topic: &str) -> bool {
+        let mut filter_parts = filter.split('/');
+        let mut topic_parts = topic.split('/');
+
+        loop {
+            match filter_parts.next() {
+                Some("#") => return true,
+                Some("+") => {
+                    if topic_parts.next().is_none() {
+                        return false;
+                    }
+                }
+                Some(f) => match topic_parts.next() {
+                    Some(t) if t == f => {}
+                    _ => return false,
+                },
+                None => return topic_parts.next().is_none(),
+            }
+        }
     }
 }
 
@@ -133,12 +159,14 @@ impl Mqtt5PubSub for MockClient {
         *next_id += 1;
         subscriptions.push((topic.clone(), subscription_id, tx.clone()));
 
-        // Replay any retained message for this topic
+        // Replay any retained messages matching this subscription filter
         let retained = self.retained_messages.lock().unwrap();
-        if let Some(retained_msg) = retained.get(&topic) {
-            let mut msg = retained_msg.clone();
-            msg.subscription_id = Some(subscription_id);
-            let _ = tx.send(msg);
+        for (retained_topic, retained_msg) in retained.iter() {
+            if Self::topic_matches(&topic, retained_topic) {
+                let mut msg = retained_msg.clone();
+                msg.subscription_id = Some(subscription_id);
+                let _ = tx.send(msg);
+            }
         }
 
         Ok(subscription_id)
@@ -455,9 +483,12 @@ mod tests {
         
         // Now subscribe - should immediately receive the retained message
         let (tx, mut rx) = broadcast::channel(10);
-        let sub_id = client.subscribe("test/retained".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
+        let sub_id = client.subscribe("test/+".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
         
-        let received = rx.recv().await.unwrap();
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for retained message")
+            .unwrap();
         assert_eq!(received.topic, "test/retained");
         assert_eq!(received.payload, Bytes::from("retained payload"));
         assert_eq!(received.subscription_id, Some(sub_id));
@@ -482,6 +513,82 @@ mod tests {
         
         // Should not receive anything - verify with try_recv
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_topic_matches_exact() {
+        assert!(MockClient::topic_matches("a/b/c", "a/b/c"));
+        assert!(!MockClient::topic_matches("a/b/c", "a/b/d"));
+        assert!(!MockClient::topic_matches("a/b", "a/b/c"));
+        assert!(!MockClient::topic_matches("a/b/c", "a/b"));
+    }
+
+    #[test]
+    fn test_topic_matches_single_level_wildcard() {
+        assert!(MockClient::topic_matches("a/+/c", "a/b/c"));
+        assert!(MockClient::topic_matches("a/+/c", "a/x/c"));
+        assert!(!MockClient::topic_matches("a/+/c", "a/b/d"));
+        assert!(!MockClient::topic_matches("a/+/c", "a/b/c/d"));
+        assert!(MockClient::topic_matches("+", "anything"));
+        assert!(!MockClient::topic_matches("+", "two/levels"));
+    }
+
+    #[test]
+    fn test_topic_matches_multi_level_wildcard() {
+        assert!(MockClient::topic_matches("#", "anything"));
+        assert!(MockClient::topic_matches("#", "a/b/c"));
+        assert!(MockClient::topic_matches("a/#", "a/b"));
+        assert!(MockClient::topic_matches("a/#", "a/b/c/d"));
+        assert!(MockClient::topic_matches("a/#", "a"));
+        assert!(!MockClient::topic_matches("a/#", "b/c"));
+    }
+
+    #[test]
+    fn test_topic_matches_combined_wildcards() {
+        assert!(MockClient::topic_matches("sensor/+/temp/#", "sensor/room1/temp/celsius"));
+        assert!(MockClient::topic_matches("sensor/+/temp/#", "sensor/room1/temp"));
+        assert!(!MockClient::topic_matches("sensor/+/temp/#", "sensor/room1/humidity"));
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_subscribe_wildcard_simulate_receive() {
+        let mut client = MockClient::new_default();
+        let (tx, mut rx) = broadcast::channel(10);
+
+        client.subscribe("test/+".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
+
+        let msg = MqttMessage::simple(
+            "test/topic".to_string(),
+            QoS::AtMostOnce,
+            false,
+            Bytes::from("wildcard message"),
+        );
+        let count = client.simulate_receive(msg).unwrap();
+        assert_eq!(count, 1);
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.topic, "test/topic");
+    }
+
+    #[tokio::test]
+    async fn test_mock_client_subscribe_wildcard_replays_retained() {
+        let mut client = MockClient::new_default();
+
+        let msg = MqttMessage::simple(
+            "test/retained".to_string(),
+            QoS::AtLeastOnce,
+            true,
+            Bytes::from("retained payload"),
+        );
+        client.simulate_receive(msg).unwrap();
+
+        let (tx, mut rx) = broadcast::channel(10);
+        let sub_id = client.subscribe("test/+".to_string(), QoS::AtLeastOnce, tx).await.unwrap();
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.topic, "test/retained");
+        assert_eq!(received.payload, Bytes::from("retained payload"));
+        assert_eq!(received.subscription_id, Some(sub_id));
     }
 
     #[tokio::test]
