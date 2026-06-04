@@ -1,5 +1,6 @@
 pub mod message;
-pub mod availability;
+pub mod availability_trait;
+pub mod concrete;
 
 #[cfg(feature = "validation")]
 pub mod validation;
@@ -8,6 +9,7 @@ pub mod validation;
 pub mod mock;
 
 use async_trait::async_trait;
+use availability_trait::AvailabilityHelper;
 pub use message::MqttMessage;
 use std::fmt;
 use tokio::sync::{broadcast, watch, oneshot};
@@ -129,8 +131,11 @@ pub trait Mqtt5PubSub {
     /// for any acknowledgment from the broker.
     fn publish_nowait(&mut self, message: MqttMessage) -> Result<MqttPublishSuccess, Mqtt5PubSubError>;
 
-    /// Get an AvailabilityHelper for publishing availability messages.  
-    fn get_availability_helper(&mut self) -> availability::AvailabilityHelper;
+    /// Get an AvailabilityHelper for publishing availability messages.
+    ///
+    /// Returns `Some(Box<dyn AvailabilityHelper>)` when the client can provide
+    /// an availability helper, or `None` when not available.
+    fn get_availability_helper(&mut self) -> Option<Box<dyn AvailabilityHelper>>;
 }
 
 // Re-export commonly used types
@@ -224,8 +229,8 @@ mod tests {
             Ok(MqttPublishSuccess::Queued)
         }
 
-        fn get_availability_helper(&mut self) -> availability::AvailabilityHelper {
-            availability::AvailabilityHelper::system_availability(self.client_id.clone())
+        fn get_availability_helper(&mut self) -> Option<Box<dyn crate::availability_trait::AvailabilityHelper>> {
+            Some(Box::new(crate::concrete::GenericAvailability::new(self.client_id.clone())))
         }
     }
 

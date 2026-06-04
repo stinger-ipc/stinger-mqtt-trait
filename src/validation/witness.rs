@@ -31,7 +31,7 @@
 use crate::message;
 use crate::validation::broker::BrokerTransport;
 use bytes::Bytes;
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS as RumqttcQoS, Transport};
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS as RumqttcQoS};
 use std::sync::{Arc, Mutex};
 use tokio::time::{timeout, Duration};
 
@@ -71,18 +71,15 @@ impl WitnessClient {
         // Create MQTT options based on transport type
         let mut mqtt_options = match &transport {
             BrokerTransport::Tcp { host, port } => {
-                MqttOptions::new(client_id, host.clone(), *port)
+                MqttOptions::new(client_id, rumqttc::Broker::tcp(host.clone(), *port))
             }
             BrokerTransport::Unix { path } => {
-                // For Unix sockets, rumqttc uses the host field to specify the socket path
-                let mut opts = MqttOptions::new(client_id, path.to_string_lossy().to_string(), 0);
-                opts.set_transport(Transport::Unix);
-                opts
+                MqttOptions::new(client_id, rumqttc::Broker::unix(path.clone()))
             }
         };
 
         // Set connection parameters
-        mqtt_options.set_keep_alive(std::time::Duration::from_secs(5));
+        mqtt_options.set_keep_alive(5);
 
         // Create client and event loop
         let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
@@ -102,7 +99,7 @@ impl WitnessClient {
                         };
                         
                         let captured = CapturedMessage {
-                            topic: publish.topic.clone(),
+                            topic: String::from_utf8_lossy(&publish.topic).to_string(),
                             payload: Bytes::from(publish.payload.to_vec()),
                             qos,
                             retain: publish.retain,

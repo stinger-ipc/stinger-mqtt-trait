@@ -51,6 +51,7 @@ This is **not** a batteries-included MQTT framework or full client abstraction. 
 - **Builder pattern for messages** - Ergonomic construction with compile-time field validation via `MqttMessageBuilder`
 - **Mock client** - Stateless mock implementation for testing (feature: `mock_client`)
 - **Validation suite** - Optional test suite for implementation verification (feature: `validation`)
+ - **Availability helper** - Optional `AvailabilityHelper` trait and a concrete `GenericAvailability` implementation for publishing/consuming LWT-style availability messages
 
 ## Design Decisions & Rationale
 
@@ -146,7 +147,32 @@ stinger-mqtt-trait = "0.2"
 
 To use the validation suite for testing your implementation:
 
-```toml
+Note: Implementations may optionally provide an availability helper. The trait method
+`get_availability_helper(&mut self) -> Option<Box<dyn AvailabilityHelper>>` returns
+`Some(...)` when an availability helper is available or `None` when not. Consumers
+should handle the `Option` accordingly.
+
+## Availability Helper
+
+The crate provides an `AvailabilityHelper` abstraction for publishing and interpreting
+client availability (online/offline) messages. A lightweight concrete implementation,
+`GenericAvailability`, is included for common cases:
+
+- Topic: `system/{client_id}`
+- Payload: JSON object `{"online": true}` / `{"online": false}`
+- QoS: `AtLeastOnce` (1)
+- Retain: `true`
+- Republish interval: `None` (no automatic republish)
+
+`AvailabilityHelper` also exposes a JSONPath to locate the boolean `online` field
+in availability payloads; the crate uses `jsonpath-rust` to match that value when
+decoding incoming availability messages. The `GenericAvailability` implementation
+uses the JSONPath `$.online`.
+
+The mock client and test helpers return `Some(Box::new(GenericAvailability::new(client_id)))`
+so tests and examples exercise availability handling by default.
+
+## Validation Suite
 [dev-dependencies]
 stinger-mqtt-trait = { version = "0.2", features = ["validation"] }
 ```

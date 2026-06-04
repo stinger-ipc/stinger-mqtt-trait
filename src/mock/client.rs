@@ -153,6 +153,7 @@ impl Mqtt5PubSub for MockClient {
         _qos: QoS,
         tx: broadcast::Sender<MqttMessage>,
     ) -> Result<u32, Mqtt5PubSubError> {
+        println!("MockClient subscribing to topic '{}'", topic);
         let mut subscriptions = self.subscriptions.lock().unwrap();
         let mut next_id = self.next_sub_id.lock().unwrap();
         let subscription_id = *next_id;
@@ -180,7 +181,7 @@ impl Mqtt5PubSub for MockClient {
 
     async fn publish(&mut self, message: MqttMessage) -> Result<MqttPublishSuccess, Mqtt5PubSubError> {
         self.published_messages.lock().unwrap().push(message.clone());
-        
+        println!("MockClient publishing message to topic '{}'", message.topic);
         // Return appropriate success variant based on QoS
         match message.qos {
             QoS::AtMostOnce => Ok(MqttPublishSuccess::Sent),
@@ -192,7 +193,7 @@ impl Mqtt5PubSub for MockClient {
     async fn publish_noblock(&mut self, message: MqttMessage) -> tokio::sync::oneshot::Receiver<Result<MqttPublishSuccess, Mqtt5PubSubError>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.published_messages.lock().unwrap().push(message.clone());
-        // Simulate immediate success for mock
+        println!("MockClient publishing message to topic '{}'", message.topic);
         let result = match message.qos {
             QoS::AtMostOnce => Ok(MqttPublishSuccess::Sent),
             QoS::AtLeastOnce => Ok(MqttPublishSuccess::Acknowledged),
@@ -203,13 +204,15 @@ impl Mqtt5PubSub for MockClient {
     }
 
     fn publish_nowait(&mut self, message: MqttMessage) -> Result<MqttPublishSuccess, Mqtt5PubSubError> {
+        println!("MockClient publishing message to topic '{}'", message.topic);
         self.published_messages.lock().unwrap().push(message);
         Ok(MqttPublishSuccess::Queued)
     }
 
-    fn get_availability_helper(&mut self) -> crate::availability::AvailabilityHelper {
-        crate::availability::AvailabilityHelper::client_availability("local".to_string(), self.client_id.clone())
+    fn get_availability_helper(&mut self) -> Option<Box<dyn crate::availability_trait::AvailabilityHelper>> {
+        Some(Box::new(crate::concrete::GenericAvailability::new(self.client_id.clone())))
     }
+
 }
 
 #[cfg(test)]

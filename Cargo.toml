@@ -1,6 +1,6 @@
 [package]
 name = "stinger-mqtt-trait"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 authors = ["Jacob Brunson <github@jacobbrunson.com>"]
 description = "Rust trait for defining an interface for a MQTT client"
@@ -18,10 +18,11 @@ bytes = "1.10.1"
 derive_builder = "0.20"
 async-trait = "0.1.89"
 chrono = { version = "0.4", features = ["serde"] }
-rumqttc = { version = "0.24", optional = true }
+rumqttc-v5-next = { version = "0.29", optional = true }
+jsonpath-rust = "0.7"
 
 [features]
-validation = ["tokio/time", "tokio/rt", "tokio/process", "dep:rumqttc"]
+validation = ["tokio/time", "tokio/rt", "tokio/process", "dep:rumqttc-v5-next"]
 mock_client = []
 availability_publish = ["tokio/time"]
 
