@@ -209,6 +209,7 @@ impl Mqtt5PubSub for MockClient {
         Ok(MqttPublishSuccess::Queued)
     }
 
+    #[cfg(feature = "lwt")]
     fn get_availability_helper(&mut self) -> Option<Box<dyn crate::availability_trait::AvailabilityHelper>> {
         Some(Box::new(crate::concrete::GenericAvailability::new(self.client_id.clone())))
     }

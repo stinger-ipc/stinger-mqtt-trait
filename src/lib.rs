@@ -1,5 +1,7 @@
 pub mod message;
+#[cfg(feature = "lwt")]
 pub mod availability_trait;
+#[cfg(feature = "lwt")]
 pub mod concrete;
 
 #[cfg(feature = "validation")]
@@ -9,6 +11,7 @@ pub mod validation;
 pub mod mock;
 
 use async_trait::async_trait;
+#[cfg(feature = "lwt")]
 use availability_trait::AvailabilityHelper;
 pub use message::MqttMessage;
 use std::fmt;
@@ -135,6 +138,7 @@ pub trait Mqtt5PubSub {
     ///
     /// Returns `Some(Box<dyn AvailabilityHelper>)` when the client can provide
     /// an availability helper, or `None` when not available.
+    #[cfg(feature = "lwt")]
     fn get_availability_helper(&mut self) -> Option<Box<dyn AvailabilityHelper>>;
 }
 
@@ -229,6 +233,7 @@ mod tests {
             Ok(MqttPublishSuccess::Queued)
         }
 
+        #[cfg(feature = "lwt")]
         fn get_availability_helper(&mut self) -> Option<Box<dyn crate::availability_trait::AvailabilityHelper>> {
             Some(Box::new(crate::concrete::GenericAvailability::new(self.client_id.clone())))
         }
